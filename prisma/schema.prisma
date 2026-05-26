@@ -4,10 +4,61 @@
 // Get a free hosted Postgres database in seconds: `npx create-db`
 
 generator client {
-  provider = "prisma-client"
-  output   = "../app/generated/prisma"
+  provider = "prisma-client-js"
+  engineType = "library"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+model Organization {
+  id                  String    @id @default(cuid())
+  name                String
+  facturapiApiKey     String?
+  whatsappPhoneId     String?
+  whatsappAccessToken String?
+  customers           Customer[]
+  invoices            Invoice[]
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
+model Customer {
+  id             String       @id @default(cuid())
+  externalId     String?      // Facturapi customer ID
+  taxId          String       // RFC
+  legalName      String
+  email          String?
+  taxSystem      String?
+  zipCode        String?
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  invoices       Invoice[]
+  whatsappNumber String?      @unique
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model Invoice {
+  id             String       @id @default(cuid())
+  externalId     String?      // Facturapi invoice ID
+  amount         Float
+  status         String       // pending, issued, cancelled
+  pdfUrl         String?
+  xmlUrl         String?
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  customerId     String
+  customer       Customer     @relation(fields: [customerId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model WhatsAppSession {
+  id             String   @id @default(cuid())
+  phoneNumber    String   @unique
+  state          String   // IDLE, ASK_RFC, ASK_AMOUNT, CONFIRMING
+  data           Json?    // Temporary data during the flow
+  updatedAt      DateTime @updatedAt
 }
