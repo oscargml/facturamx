@@ -1,17 +1,45 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createHmac, timingSafeEqual } from 'crypto';
 import prisma from '../../../../lib/prisma';
 import { WhatsAppService } from '../../../../lib/messaging-service';
 import { FacturapiService } from '../../../../lib/pac-service';
 
-const WEBHOOK_VERIFY_TOKEN = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'facturamx_token';
+// Verifies Meta's X-Hub-Signature-256 header against the raw request body.
+// Meta computes HMAC-SHA256 over the exact raw payload using the app secret and
+// sends it as `sha256=<hex>`. We must compare against the untouched bytes, so the
+// caller passes the raw body string (re-serializing JSON would change the bytes).
+function isValidSignature(rawBody: string, signatureHeader: string | null, appSecret: string): boolean {
+  if (!signatureHeader || !signatureHeader.startsWith('sha256=')) {
+    return false;
+  }
+
+  const expected = createHmac('sha256', appSecret).update(rawBody, 'utf8').digest('hex');
+  const received = signatureHeader.slice('sha256='.length);
+
+  const expectedBuf = Buffer.from(expected, 'hex');
+  const receivedBuf = Buffer.from(received, 'hex');
+
+  // timingSafeEqual throws on length mismatch, so guard first.
+  if (expectedBuf.length !== receivedBuf.length) {
+    return false;
+  }
+
+  return timingSafeEqual(expectedBuf, receivedBuf);
+}
 
 export async function GET(request: NextRequest) {
+  const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
+  if (!verifyToken) {
+    console.error('WHATSAPP_WEBHOOK_VERIFY_TOKEN is not set');
+    return new Response('Server misconfiguration', { status: 500 });
+  }
+
   const searchParams = request.nextUrl.searchParams;
   const mode = searchParams.get('hub.mode');
   const token = searchParams.get('hub.verify_token');
   const challenge = searchParams.get('hub.challenge');
 
-  if (mode === 'subscribe' && token === WEBHOOK_VERIFY_TOKEN) {
+  if (mode === 'subscribe' && token === verifyToken) {
     return new Response(challenge, { status: 200 });
   }
 
@@ -19,7 +47,20 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json();
+  const appSecret = process.env.WHATSAPP_APP_SECRET;
+  if (!appSecret) {
+    console.error('WHATSAPP_APP_SECRET is not set');
+    return new Response('Server misconfiguration', { status: 500 });
+  }
+
+  // Read the raw body first: HMAC must be computed over the exact bytes Meta signed.
+  const rawBody = await request.text();
+
+  if (!isValidSignature(rawBody, request.headers.get('x-hub-signature-256'), appSecret)) {
+    return new Response('Invalid signature', { status: 401 });
+  }
+
+  const body = JSON.parse(rawBody);
 
   if (body.object !== 'whatsapp_business_account') {
     return NextResponse.json({ error: 'Not a WhatsApp webhook' }, { status: 404 });
